@@ -65,6 +65,20 @@ Eigen::VectorXd polyfit(Eigen::VectorXd xvals, Eigen::VectorXd yvals,
   return result;
 }
 
+double squeeze(const double value) {
+  if (value < -1) return -1;
+  if (value > 1) return 1;
+  return value;
+}
+
+Eigen::VectorXd Vector2Eigen(const vector<double>& vector) {
+  Eigen::VectorXd eigen(vector.size());
+  for (int i = 0; i < vector.size(); i++) {
+    eigen[i] = vector[i];
+  }
+  return eigen;
+}
+
 int main() {
   uWS::Hub h;
 
@@ -85,21 +99,30 @@ int main() {
         string event = j[0].get<string>();
         if (event == "telemetry") {
           // j[1] is the data JSON object
-          vector<double> ptsx = j[1]["ptsx"];
-          vector<double> ptsy = j[1]["ptsy"];
-          double px = j[1]["x"];
-          double py = j[1]["y"];
+          Eigen::VectorXd ptsx = Vector2Eigen(j[1]["ptsx"]);
+          Eigen::VectorXd ptsy = Vector2Eigen(j[1]["ptsy"]);
+          auto coeffs = polyfit(ptsx, ptsy, 3);
+
+          double x = j[1]["x"];
+          double y = j[1]["y"];
           double psi = j[1]["psi"];
           double v = j[1]["speed"];
 
-          /*
-          * TODO: Calculate steering angle and throttle using MPC.
-          *
-          * Both are in between [-1, 1].
-          *
-          */
-          double steer_value;
-          double throttle_value;
+          // The cross track error is calculated by evaluating at polynomial at x, f(x)
+          // and subtracting y.
+          double cte = polyeval(coeffs, x) - y;
+          // Due to the sign starting at 0, the orientation error is -f'(x).
+          // derivative of coeffs[0] + coeffs[1] * x -> coeffs[1]
+          double epsi = psi - atan(coeffs[1]);
+
+          Eigen::VectorXd state(6);
+          state << x, y, psi, v, cte, epsi;
+          vector<double> mpc_output = mpc.Solve(state, coeffs);
+
+          // Calculate steering angle and throttle using MPC.
+          // Both are in between [-1, 1].
+          double steer_value = squeeze(mpc_output[6]);
+          double throttle_value = squeeze(mpc_output[7]);
 
           json msgJson;
           // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.

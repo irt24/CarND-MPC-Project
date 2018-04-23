@@ -8,6 +8,7 @@
 #include "Eigen-3.3/Eigen/QR"
 #include "MPC.h"
 #include "json.hpp"
+#include "assert.h"
 
 // for convenience
 using json = nlohmann::json;
@@ -65,20 +66,6 @@ Eigen::VectorXd polyfit(Eigen::VectorXd xvals, Eigen::VectorXd yvals,
   return result;
 }
 
-double squeeze(const double value) {
-  if (value < -1) return -1;
-  if (value > 1) return 1;
-  return value;
-}
-
-Eigen::VectorXd Vector2Eigen(const vector<double>& vector) {
-  Eigen::VectorXd eigen(vector.size());
-  for (int i = 0; i < vector.size(); i++) {
-    eigen[i] = vector[i];
-  }
-  return eigen;
-}
-
 int main() {
   uWS::Hub h;
 
@@ -99,57 +86,57 @@ int main() {
         string event = j[0].get<string>();
         if (event == "telemetry") {
           // j[1] is the data JSON object
-          Eigen::VectorXd ptsx = Vector2Eigen(j[1]["ptsx"]);
-          Eigen::VectorXd ptsy = Vector2Eigen(j[1]["ptsy"]);
-          auto coeffs = polyfit(ptsx, ptsy, 3);
+          const double x = j[1]["x"];
+          const double y = j[1]["y"];
+          const double psi = j[1]["psi"];
+          const double v = j[1]["speed"];
 
-          double x = j[1]["x"];
-          double y = j[1]["y"];
-          double psi = j[1]["psi"];
-          double v = j[1]["speed"];
+          const vector<double> ptsx_map = j[1]["ptsx"];
+          const vector<double> ptsy_map = j[1]["ptsy"];
+          assert(ptsx_map.size() == ptsy_map.size());
+          Eigen::VectorXd ptsx_car(ptsx_map.size());
+          Eigen::VectorXd ptsy_car(ptsy_map.size());
 
-          // The cross track error is calculated by evaluating at polynomial at x, f(x)
-          // and subtracting y.
-          double cte = polyeval(coeffs, x) - y;
-          // Due to the sign starting at 0, the orientation error is -f'(x).
-          // derivative of coeffs[0] + coeffs[1] * x -> coeffs[1]
-          double epsi = psi - atan(coeffs[1]);
+          for (int i = 0; i < ptsx_map.size(); i++) {
+            double shift_x = ptsx_map[i] - x;
+            double shift_y = ptsy_map[i] - y;
+            ptsx_car[i] = shift_x * cos(-psi) - shift_y * sin(-psi);
+            ptsy_car[i] = shift_x * sin(-psi) + shift_y * cos(-psi);
+          }
+
+          auto coeffs = polyfit(ptsx_car, ptsy_car, 3);
+          double cte = polyeval(coeffs, 0);
+          double epsi = -atan(coeffs[1]);
 
           Eigen::VectorXd state(6);
-          state << x, y, psi, v, cte, epsi;
-          vector<double> mpc_output = mpc.Solve(state, coeffs);
-
-          // Calculate steering angle and throttle using MPC.
-          // Both are in between [-1, 1].
-          double steer_value = squeeze(mpc_output[6]);
-          double throttle_value = squeeze(mpc_output[7]);
+          state << 0, 0, 0, v, cte, epsi;
+          vector<double> vars = mpc.Solve(state, coeffs);
 
           json msgJson;
-          // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.
-          // Otherwise the values will be in between [-deg2rad(25), deg2rad(25] instead of [-1, 1].
-          msgJson["steering_angle"] = steer_value;
-          msgJson["throttle"] = throttle_value;
+          const double Lf = 2.67;
+          msgJson["steering_angle"] = -vars[0] / (deg2rad(25) * Lf);
+          msgJson["throttle"] = vars[1];
 
           //Display the MPC predicted trajectory 
           vector<double> mpc_x_vals;
           vector<double> mpc_y_vals;
-
-          //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
-          // the points in the simulator are connected by a Green line
-
+          for (int i = 2; i < vars.size(); i++) {
+            if (i % 2 == 0) mpc_x_vals.push_back(vars[i]);
+            else mpc_y_vals.push_back(vars[i]);
+          }
           msgJson["mpc_x"] = mpc_x_vals;
           msgJson["mpc_y"] = mpc_y_vals;
 
           //Display the waypoints/reference line
           vector<double> next_x_vals;
           vector<double> next_y_vals;
-
-          //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
-          // the points in the simulator are connected by a Yellow line
-
+          for (int i = 0; i < 25; i++) {
+            double next_x = 2.5 * i; 
+            next_x_vals.push_back(next_x);
+            next_y_vals.push_back(polyeval(coeffs, next_x));
+          }
           msgJson["next_x"] = next_x_vals;
           msgJson["next_y"] = next_y_vals;
-
 
           auto msg = "42[\"steer\"," + msgJson.dump() + "]";
           std::cout << msg << std::endl;
@@ -162,7 +149,7 @@ int main() {
           //
           // NOTE: REMEMBER TO SET THIS TO 100 MILLISECONDS BEFORE
           // SUBMITTING.
-          this_thread::sleep_for(chrono::milliseconds(100));
+          //this_thread::sleep_for(chrono::milliseconds(100));
           ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
         }
       } else {

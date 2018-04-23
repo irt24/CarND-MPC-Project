@@ -13,6 +13,10 @@
 // for convenience
 using json = nlohmann::json;
 
+const double Lf = 2.67;
+const int latency_ms = 100;
+const double latency_sec = latency_ms / 1000;
+
 // For converting back and forth between radians and degrees.
 constexpr double pi() { return M_PI; }
 double deg2rad(double x) { return x * pi() / 180; }
@@ -86,10 +90,12 @@ int main() {
         string event = j[0].get<string>();
         if (event == "telemetry") {
           // j[1] is the data JSON object
-          const double x = j[1]["x"];
-          const double y = j[1]["y"];
-          const double psi = j[1]["psi"];
-          const double v = j[1]["speed"];
+          double x = j[1]["x"];
+          double y = j[1]["y"];
+          double psi = j[1]["psi"];
+          double v = j[1]["speed"];
+          double delta= j[1]["steering_angle"];
+          double a = j[1]["throttle"];
 
           const vector<double> ptsx_map = j[1]["ptsx"];
           const vector<double> ptsy_map = j[1]["ptsy"];
@@ -108,12 +114,21 @@ int main() {
           double cte = polyeval(coeffs, 0);
           double epsi = -atan(coeffs[1]);
 
+          // Account for latency.
+          // (Ideally we'd just reuse the equations in the MPC class.)
+          x = y = psi = 0;
+          x += v * cos(psi) * latency_sec;
+          y += v * sin(psi) * latency_sec;
+          psi += v * delta / Lf * latency_sec;
+          v += a * latency_sec;
+          cte += v * epsi * latency_sec;
+          epsi -= v * atan(coeffs[1]) * latency_sec / Lf;
+
           Eigen::VectorXd state(6);
-          state << 0, 0, 0, v, cte, epsi;
+          state << x, y, psi, v, cte, epsi;
           vector<double> vars = mpc.Solve(state, coeffs);
 
           json msgJson;
-          const double Lf = 2.67;
           msgJson["steering_angle"] = -vars[0] / (deg2rad(25) * Lf);
           msgJson["throttle"] = vars[1];
 
@@ -142,14 +157,8 @@ int main() {
           std::cout << msg << std::endl;
           // Latency
           // The purpose is to mimic real driving conditions where
-          // the car does actuate the commands instantly.
-          //
-          // Feel free to play around with this value but should be to drive
-          // around the track with 100ms latency.
-          //
-          // NOTE: REMEMBER TO SET THIS TO 100 MILLISECONDS BEFORE
-          // SUBMITTING.
-          //this_thread::sleep_for(chrono::milliseconds(100));
+          // the car doesn't actuate the commands instantly.
+          this_thread::sleep_for(chrono::milliseconds(latency_ms));
           ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
         }
       } else {
